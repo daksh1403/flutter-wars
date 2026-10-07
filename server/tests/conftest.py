@@ -51,7 +51,9 @@ T0 = datetime(2026, 10, 12, 9, 0, tzinfo=UTC)
 def _make_engine() -> Engine:
     if PG_URL:
         return create_engine(PG_URL)
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
 
     @event.listens_for(engine, "connect")
     def _fk_on(dbapi_conn, _):  # type: ignore[no-untyped-def]
@@ -147,7 +149,6 @@ def widgets(session: Session) -> list[Widget]:
 
 
 # --- Modules I/J (trading, auction): PostgreSQL-only, owner stand-in adapters ---
-
 
 
 @pytest.fixture(scope="session")
