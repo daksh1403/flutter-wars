@@ -1,0 +1,9 @@
+fastapi<1,>=0.115
+sqlmodel<0.1,>=0.0.24
+psycopg[binary]<4,>=3.2
+
+[dev]
+pytest<10,>=8
+httpx2<3,>=2.13
+ruff<1,>=0.11
+uvicorn<1,>=0.34

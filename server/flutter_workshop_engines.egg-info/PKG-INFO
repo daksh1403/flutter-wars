@@ -1,0 +1,13 @@
+Metadata-Version: 2.4
+Name: flutter-workshop-engines
+Version: 0.1.0
+Summary: Modules I/J: atomic whole-credit trading and hidden incremental auctions
+Requires-Python: >=3.11
+Requires-Dist: fastapi<1,>=0.115
+Requires-Dist: sqlmodel<0.1,>=0.0.24
+Requires-Dist: psycopg[binary]<4,>=3.2
+Provides-Extra: dev
+Requires-Dist: pytest<10,>=8; extra == "dev"
+Requires-Dist: httpx2<3,>=2.13; extra == "dev"
+Requires-Dist: ruff<1,>=0.11; extra == "dev"
+Requires-Dist: uvicorn<1,>=0.34; extra == "dev"
