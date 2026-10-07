@@ -1,4 +1,44 @@
-# Trading and Auction modules
+# Flutter Wars backend
+
+Python + FastAPI + SQLModel on Neon PostgreSQL (through Cloudflare Hyperdrive), following *GDG Flutter Workshop: Final Modular Backend Architecture* v1.0.
+
+## What is here
+
+| Path | Module | Status |
+|---|---|---|
+| `app/modules/market/` | G: Market & Round Lifecycle | Implemented. See [docs/market.md](docs/market.md). |
+| `app/modules/pricing/` | H: Pricing Engine | Implemented. See [docs/pricing.md](docs/pricing.md). |
+| `app/trading/` | I: Purchase/Trade Engine | Implemented against owner ports. See [Trading and Auction modules](#trading-and-auction-modules-i-j) and [docs/INTEGRATION.md](docs/INTEGRATION.md). |
+| `app/auction/` | J: Auction | Implemented against owner ports. Same docs as I. |
+| `app/integration/` | I/J composition | `BackendModules` runtime plus the `MarketPort`/`PricingPort`/`LedgerPort`/`InventoryPort`/`CatalogPort` contracts other owners implement. |
+| `app/core/` | A: Foundation, plus the B/K principal | **Placeholder.** Gives `get_session`, `get_principal`, `require_organizer`, `AppError` and `get_now` to G/H. `get_principal` rejects every request until Module B replaces it. |
+| `app/modules/catalog/` | D: Widget Catalog | **Placeholder.** A minimal `widget` table plus `get_widget()`. |
+| `migrations/` | M: Infrastructure | **Provisional** Alembic setup. `0001` is the placeholder widget table (D replaces it); `0002` creates the G/H tables. I/J ship raw SQL in `migrations/0001_modules_i_j.sql`, not yet an Alembic revision. |
+
+Each module follows the same layout: `models.py` (SQLModel tables), `schemas.py` (API payloads), `service.py` (business rules and the internal contracts for other modules), `router.py` (thin FastAPI routes), plus `repository.py` in market for queries. Modules register in `app/main.py:MODULES`.
+
+## Develop
+
+```bash
+cd server
+uv sync
+uv run pytest                    # in-memory SQLite: unit and API tests
+DATABASE_URL=postgresql+psycopg://... uv run alembic upgrade head
+DATABASE_URL=... uv run fastapi dev app/main.py
+```
+
+### Tests against PostgreSQL
+
+Row locking and the partial unique indexes can only be proven on Postgres. The concurrency suite (`tests/test_postgres_concurrency.py`) runs only when `TEST_DATABASE_URL` points at one:
+
+```bash
+docker run -d --name pg -e POSTGRES_PASSWORD=pw -p 5432:5432 postgres:17
+TEST_DATABASE_URL=postgresql+psycopg://postgres:pw@localhost:5432/postgres uv run pytest
+```
+
+The suite drops and recreates every table, so never point it at a shared database.
+
+## Trading and Auction modules (I, J)
 
 Modules I and J are implemented here. Authentication, wallets, inventory, market
 lifecycle, catalog, pricing algorithms, and infrastructure remain owned by their
@@ -8,7 +48,7 @@ Credits are **whole integers**, as agreed in this session. Each financial amount
 is limited to PostgreSQL INTEGER (0–2,147,483,647). IDs are UUIDs. A purchase uses
 one authoritative unit price for its entire quantity.
 
-## Study the files in this order
+### Study the files in this order
 
 1. `app/trading/models.py`: the permanent BUY/SELL receipt and database constraints.
 2. `app/trading/schemas.py`: purchase/sale inputs and public receipts.
@@ -26,17 +66,15 @@ Your original Trading imports remain available through `trading/contracts.py` an
 `trading/errors.py`. Canonical contracts/errors moved to `integration/` so Auction
 can reuse them without depending on Trading internals.
 
-## Install and test
+### Install and test
 
 From `server/`:
 
 ```sh
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e '.[dev]'
-python scripts/test_postgres.py
-ruff check app tests scripts
-ruff format --check app tests scripts
+uv sync
+uv run python scripts/test_postgres.py
+uv run ruff check app tests scripts
+uv run ruff format --check app tests scripts
 ```
 
 The test script needs locally installed PostgreSQL executables on PATH. It starts
@@ -45,14 +83,14 @@ tests, and stops/deletes that instance afterward. It does not use your Neon DB o
 an existing PostgreSQL instance.
 
 Alternatively, provide `TEST_DATABASE_URL` for a disposable PostgreSQL database
-whose name ends in `_modules_test`, then run `python -m pytest -q`. These tests
-reset all I/J and test-adapter tables in that database. Never point them at an
+whose name ends in `_modules_test`, then run `uv run pytest -q`. These tests
+reset all I/J, G/H and test-adapter tables in that database. Never point them at an
 application database. Without a test URL, database tests are explicitly skipped.
 
 `tests/adapters.py` contains test-only owner tables and implementations. They are
 never imported by the application and are not real implementations of E/F/G/H.
 
-## Runtime wiring and authentication
+### Runtime wiring and authentication
 
 Foundation provides a fresh SQLModel session factory and an adapter factory:
 
@@ -83,7 +121,7 @@ The default `app.main:app` is intentionally unconfigured: it starts and provides
 `/health`, but it cannot authenticate participants or perform mutations. It is a
 Foundation composition example, not a production-ready authentication setup.
 
-## API
+### API
 
 All participant routes require an authenticated eligible team.
 
@@ -128,7 +166,7 @@ requires a separate approved policy. There are no debug/bid-list endpoints.
 Do not enable SQL echo/parameter logging or log request bodies, bids, JWTs, or
 exception arguments. Foundation/Observability must preserve that restriction.
 
-## Transaction and concurrency guarantees
+### Transaction and concurrency guarantees
 
 The runtime owns `with session.begin()`. Success responses are returned AFTER
 that context commits. Any adapter error, flush error, or commit failure rolls
@@ -172,7 +210,7 @@ a new order. `amount_reached_at` is recorded too. The order resolves identical
 timestamps without relying on process clocks or arbitrary team IDs. One current
 bid exists per team/auction; the entire configured lot goes to one highest bidder.
 
-## Retry handling
+### Retry handling
 
 The client creates a UUID for each intended operation and reuses it on retries.
 BUY/SELL scope: team + transaction type + key. Bid scope: auction + team + key.
@@ -186,7 +224,7 @@ closing. Auction ID is settlement's natural key; the unique result plus auction
 lock prevents double debit/award/release. Keep request receipts with event audit
 history. No automatic deletion is implemented because deletion reopens retry risk.
 
-## Explicit configuration / unresolved rules
+### Explicit configuration / unresolved rules
 
 - No default brokerage percentage or rounding. Inject any `BrokeragePolicy`.
   `FixedFeeBrokerage(amount=...)` and `BasisPointsBrokerage(rate_bps=...,
@@ -207,7 +245,7 @@ history. No automatic deletion is implemented because deletion reopens retry ris
 - External table names/FKs, archive behavior, resale mapping across rounds,
   team-disable rules, and organizer audit hooks need owner agreement.
 
-## Migrations and deployment
+### Migrations and deployment
 
 `migrations/0001_modules_i_j.sql` creates only I/J tables/types/indexes and an
 immutable trade-history trigger. Apply once inside the team's migration

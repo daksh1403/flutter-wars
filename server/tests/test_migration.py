@@ -6,7 +6,8 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 
-def test_migration_creates_owned_schema_and_immutable_trades(engine):
+def test_migration_creates_owned_schema_and_immutable_trades(ij_engine):
+    engine = ij_engine
     schema = "ij_migration_" + uuid4().hex
     source = (Path(__file__).parents[1] / "migrations" / "0001_modules_i_j.sql").read_text()
     try:

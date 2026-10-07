@@ -1,15 +1,31 @@
+"""Test fixtures.
+
+Runs against in-memory SQLite by default. Set TEST_DATABASE_URL to a
+PostgreSQL URL (e.g. a throwaway Neon branch or local container) to run the
+same suite plus the PostgreSQL-only concurrency tests.
+"""
+
 import os
-from datetime import datetime, timedelta, timezone
+from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, func, select, update
+from fastapi.testclient import TestClient
+from sqlalchemy import Engine, event, func, select, update
 from sqlalchemy.engine import make_url
-from sqlmodel import Session, SQLModel
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, create_engine
 
+import app.models  # noqa: F401  (registers every table)
 from app.auction.models import Auction, AuctionState
+from app.core.auth import Principal, Role, get_principal
+from app.core.clock import get_now
+from app.core.db import get_session
 from app.integration.contracts import Adapters
 from app.integration.runtime import BackendModules
+from app.main import create_app
+from app.modules.catalog.models import Widget
 from app.trading.models import TradeTransaction
 from tests.adapters import (
     CatalogAdapter,
@@ -28,9 +44,114 @@ from tests.adapters import (
     wallets,
 )
 
+PG_URL = os.environ.get("TEST_DATABASE_URL")
+T0 = datetime(2026, 10, 12, 9, 0, tzinfo=UTC)
+
+
+def _make_engine() -> Engine:
+    if PG_URL:
+        return create_engine(PG_URL)
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+
+    @event.listens_for(engine, "connect")
+    def _fk_on(dbapi_conn, _):  # type: ignore[no-untyped-def]
+        dbapi_conn.execute("PRAGMA foreign_keys=ON")
+
+    return engine
+
+
+@pytest.fixture
+def engine() -> Iterator[Engine]:
+    engine = _make_engine()
+    # Only the tables app.models registers: I/J tables are PostgreSQL-only and
+    # are created by their own `ij_engine`/`env` fixtures.
+    tables = [getattr(app.models, name).__table__ for name in app.models.__all__]
+    SQLModel.metadata.drop_all(engine, tables=tables)
+    SQLModel.metadata.create_all(engine, tables=tables)
+    yield engine
+    SQLModel.metadata.drop_all(engine, tables=tables)
+    engine.dispose()
+
+
+@pytest.fixture
+def session(engine: Engine) -> Iterator[Session]:
+    with Session(engine) as session:
+        yield session
+
+
+class Clock:
+    def __init__(self) -> None:
+        self.now = T0
+
+    def advance(self, **kwargs: float) -> datetime:
+        self.now += timedelta(**kwargs)
+        return self.now
+
+
+@pytest.fixture
+def clock() -> Clock:
+    return Clock()
+
+
+ORGANIZER = Principal(subject="organizer@example.com", role=Role.ORGANIZER)
+PARTICIPANT = Principal(subject="player@example.com", role=Role.PARTICIPANT, team_id=1)
+
+
+class Api:
+    """TestClient wrapper with a switchable principal."""
+
+    def __init__(self, client: TestClient) -> None:
+        self.client = client
+        self.principal: Principal | None = ORGANIZER
+
+    def as_(self, principal: Principal | None) -> "Api":
+        self.principal = principal
+        return self
+
+    def __getattr__(self, name: str):  # get/post/patch/delete
+        return getattr(self.client, name)
+
+
+@pytest.fixture
+def api(engine: Engine, clock: Clock) -> Iterator[Api]:
+    app = create_app()
+
+    def _session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    wrapper: Api
+
+    def _principal() -> Principal:
+        if wrapper.principal is None:
+            return get_principal()  # the placeholder: always 401
+        return wrapper.principal
+
+    app.dependency_overrides[get_session] = _session
+    app.dependency_overrides[get_now] = lambda: clock.now
+    app.dependency_overrides[get_principal] = _principal
+    with TestClient(app) as client:
+        wrapper = Api(client)
+        yield wrapper
+
+
+@pytest.fixture
+def widgets(session: Session) -> list[Widget]:
+    items = [Widget(name=name) for name in ("Button", "ListView", "Card", "AnimatedContainer")]
+    items.append(Widget(name="OldWidget", archived=True))
+    session.add_all(items)
+    session.commit()
+    for item in items:
+        session.refresh(item)
+    return items
+
+
+# --- Modules I/J (trading, auction): PostgreSQL-only, owner stand-in adapters ---
+
+
 
 @pytest.fixture(scope="session")
-def engine():
+def ij_engine():
     url = os.environ.get("TEST_DATABASE_URL")
     if not url:
         pytest.skip("Set TEST_DATABASE_URL to a disposable PostgreSQL *_modules_test database.")
@@ -185,7 +306,8 @@ class Environment:
 
 
 @pytest.fixture
-def env(engine):
+def env(ij_engine):
+    engine = ij_engine
     SQLModel.metadata.drop_all(engine)
     metadata.drop_all(engine)
     SQLModel.metadata.create_all(engine)

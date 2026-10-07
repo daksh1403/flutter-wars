@@ -1,25 +1,59 @@
-"""Thin composition example for Foundation; no engine, JWT code, or fake adapters."""
+"""Application entrypoint.
 
-from collections.abc import Callable
+PLACEHOLDER bootstrap until Module A lands. G/H contribute routers through
+MODULES. I/J (trading, auction) are mounted through their own composition
+boundary: `runtime` (session + owner adapters) and `principal_dependency`
+(verified identity) stay unset until Foundation/Auth supply them, so those
+routes answer 503/401 instead of guessing.
+"""
+
+from collections.abc import Callable, Sequence
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from app.auction.router import build_router as auction_router
+from app.core.errors import install_error_handlers
 from app.integration.auth import Principal
 from app.integration.errors import BusinessError, ConfigurationRequired
 from app.integration.runtime import BackendModules
+from app.modules.market import router as market_router
+from app.modules.pricing import router as pricing_router
 from app.trading.router import build_router as trading_router
+
+MODULES: dict[str, Sequence[APIRouter]] = {
+    "market": (market_router.router, market_router.admin),
+    "pricing": (pricing_router.router, pricing_router.admin),
+}
 
 
 def create_app(
+    modules: Sequence[str] | None = None,
     *,
     runtime: BackendModules | None = None,
     principal_dependency: Callable[..., Principal] | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="Flutter Workshop — Trading and Auctions", version="0.1.0")
+    app = FastAPI(title="Flutter Wars backend")
+    install_error_handlers(app)
 
+    @app.get("/health", tags=["ops"])
+    def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    for name in MODULES if modules is None else modules:
+        for router in MODULES[name]:
+            app.include_router(router)
+
+    _mount_trading_and_auction(app, runtime, principal_dependency)
+    return app
+
+
+def _mount_trading_and_auction(
+    app: FastAPI,
+    runtime: BackendModules | None,
+    principal_dependency: Callable[..., Principal] | None,
+) -> None:
     def get_runtime() -> BackendModules:
         if runtime is None:
             raise ConfigurationRequired()
@@ -61,12 +95,6 @@ def create_app(
 
     app.include_router(trading_router(get_runtime, require_team))
     app.include_router(auction_router(get_runtime, require_team, require_organizer))
-
-    @app.get("/health")
-    def health():
-        return {"status": "ok"}
-
-    return app
 
 
 app = create_app()
